@@ -46,7 +46,7 @@ async fn main() -> Result<(), anyhow::Error> {
     //}
 
     #[cfg(not(debug_assertions))]
-    tracing_subscriber::fmt::ini();
+    tracing_subscriber::fmt::init();
 
     #[cfg(debug_assertions)]
     tracing_subscriber::fmt()
