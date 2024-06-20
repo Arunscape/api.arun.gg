@@ -28,23 +28,6 @@ static PORT: LazyLock<u16> = LazyLock::new(|| {
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    // initialize tracing
-
-    //#[cfg(not(debug_assertions))]
-    //tracing_subscriber::fmt::init();
-
-    //#[cfg(debug_assertions)]
-    //{
-    //    tracing_subscriber::registry()
-    //        .with(tracing_subscriber::fmt::layer())
-    //        //.with("debug,tokio::net=info")
-    //        .with(
-    //            tracing_subscriber::EnvFilter::from_default_env()
-    //                .add_directive("debug,tokio::net=info".parse()?),
-    //        )
-    //        .init();
-    //}
-
     #[cfg(not(debug_assertions))]
     tracing_subscriber::fmt::init();
 
@@ -53,7 +36,6 @@ async fn main() -> Result<(), anyhow::Error> {
         .with_max_level(tracing::Level::DEBUG)
         .init();
 
-    // build our application with a route
     let app = Router::new()
         .route("/", get(root))
         .route("/coin", get(flip_a_coin))
@@ -66,7 +48,6 @@ async fn main() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-// basic handler that responds with a static string
 async fn root() -> &'static str {
     "Hello, World!"
 }
