@@ -1,13 +1,15 @@
-use axum::{
-    http::StatusCode,
-    routing::{get, post},
-    Json, Router,
+use {
+    axum::{
+        http::StatusCode,
+        response::IntoResponse,
+        routing::{get, post},
+        Json, Router,
+    },
+    rand::prelude::*,
+    serde::{Deserialize, Serialize},
+    std::sync::LazyLock,
+    tracing_subscriber::prelude::*,
 };
-use serde::{Deserialize, Serialize};
-
-use tracing_subscriber::prelude::*;
-
-use std::sync::LazyLock;
 
 static PORT: LazyLock<u16> = LazyLock::new(|| {
     if let Ok(s) = std::env::var("API_ARUN_GG_PORT") {
@@ -52,8 +54,10 @@ async fn main() -> Result<(), anyhow::Error> {
         .init();
 
     // build our application with a route
-    let app = Router::new().route("/", get(root));
-
+    let app = Router::new()
+        .route("/", get(root))
+        .route("/coin", get(flip_a_coin))
+        .route("/random_number", get(random_number));
     // run our app with hyper, listening globally on port 3000
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", *PORT)).await?;
     tracing::info!("Listening on {:?}", listener.local_addr()?);
@@ -65,4 +69,22 @@ async fn main() -> Result<(), anyhow::Error> {
 // basic handler that responds with a static string
 async fn root() -> &'static str {
     "Hello, World!"
+}
+
+async fn flip_a_coin() -> &'static str {
+    let coin = {
+        let mut rng = rand::thread_rng();
+        rng.gen::<bool>()
+    };
+
+    if coin {
+        "heads"
+    } else {
+        "tails"
+    }
+}
+
+async fn random_number() -> impl IntoResponse {
+    let mut rng = rand::thread_rng();
+    rng.gen::<u128>().to_string()
 }
