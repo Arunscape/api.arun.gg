@@ -1,7 +1,7 @@
 [package]
 name = "api_arun_gg"
-version = "0.1.0"
-edition = "2021"
+version = "0.2.0"
+edition = "2024"
 
 [dependencies]
 axum = { version = "*" }
@@ -11,4 +11,4 @@ tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
-rand = "0.8"
+rand = "0.9"
