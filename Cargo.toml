@@ -6,9 +6,10 @@ edition = "2024"
 [dependencies]
 axum = { version = "*" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 rand = "0.9"
+libarun = {git = "https://github.com/Arunscape/libarun.git"}
+serde_json = "1.0"
