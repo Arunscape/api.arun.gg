@@ -56,6 +56,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "features",
+ "http",
  "libarun",
  "rand",
  "serde",

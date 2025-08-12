@@ -1,9 +1,12 @@
 #[allow(dead_code)]
 use {
+    axum::response::Html,
+    axum::response::Response,
     axum::{Json, Router, extract::Path, response::IntoResponse, routing::get},
     axum::{extract::Query, http::StatusCode},
     chrono::{Duration, Weekday, prelude::*},
     chrono_tz::Tz,
+    http::{HeaderMap, header},
     serde::{Deserialize, Serialize},
     serde_json::json,
 };
@@ -17,6 +20,15 @@ pub fn next() -> Router {
 #[derive(Serialize, Deserialize)]
 struct TimezoneQuery {
     tz: Option<String>,
+}
+
+fn wants_html(headers: &HeaderMap) -> bool {
+    // Simple check: look for "text/html" in Accept
+    headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.contains("text/html"))
+        .unwrap_or(false)
 }
 
 fn parse_weekday(s: &str) -> Option<Weekday> {
@@ -142,11 +154,18 @@ fn formats_payload(day_str: &str, tz: Tz, local_dt: DateTime<Tz>) -> serde_json:
     })
 }
 
-async fn handle_calc(day: String, tz_q: TimezoneQuery, which: Which) -> impl IntoResponse {
+async fn handle_calc(
+    day: String,
+    tz_q: TimezoneQuery,
+    which: Which,
+    html_response: bool,
+) -> Response {
     // TZ
     let tz = match parse_tz(&tz_q) {
         Ok(tz) => tz,
-        Err(msg) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))),
+        Err(msg) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
+        }
     };
 
     // Weekday
@@ -156,9 +175,9 @@ async fn handle_calc(day: String, tz_q: TimezoneQuery, which: Which) -> impl Int
             return (
                 StatusCode::BAD_REQUEST,
                 Json(json!({
-                    "error": "expected a weekday like /next/saturday?tz=America/New_York or /next/sunday?tz=Canada/Eastern"
+                    "error": "expected a weekday like /next/saturday?tz=America/New_York or /this/sunday?tz=Canada/Eastern"
                 })),
-            );
+            ).into_response();
         }
     };
 
@@ -180,24 +199,38 @@ async fn handle_calc(day: String, tz_q: TimezoneQuery, which: Which) -> impl Int
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({ "error": msg })),
-            );
+            )
+                .into_response();
         }
     };
+    if html_response {
+        let rfc2822 = local_dt.to_rfc2822();
+        return (
+            StatusCode::OK,
+            Html(format!(
+                "<!doctype html><html><body><h1>{rfc2822}</h1></body></html>"
+            )),
+        )
+            .into_response();
+    }
 
-    let body = Json(formats_payload(&day, tz, local_dt));
-    (StatusCode::OK, body)
+    let body = Json(formats_payload(&day, tz, local_dt)).into_response();
+
+    (StatusCode::OK, body).into_response()
 }
 
 async fn calc_next_day(
     Path(day): Path<String>,
     Query(tz): Query<TimezoneQuery>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
-    handle_calc(day, tz, Which::Next).await
+    handle_calc(day, tz, Which::Next, wants_html(&headers)).await
 }
 
 async fn calc_this_day(
     Path(day): Path<String>,
     Query(tz): Query<TimezoneQuery>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
-    handle_calc(day, tz, Which::This).await
+    handle_calc(day, tz, Which::This, wants_html(&headers)).await
 }
