@@ -38,7 +38,7 @@ async fn main() -> Result<(), anyhow::Error> {
         .route("/random_number", get(random_number))
         .route("/random_colour", get(random_colour))
         .route("/unit/{n}", get(unit_conversion))
-        .nest("/next", routes::next::next());
+        .merge(routes::next::next());
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", *PORT)).await?;
     tracing::info!("Listening on {:?}", listener.local_addr()?);
