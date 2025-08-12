@@ -5,6 +5,8 @@ use {
     std::sync::LazyLock,
 };
 
+mod routes;
+
 static PORT: LazyLock<u16> = LazyLock::new(|| {
     if let Ok(s) = std::env::var("API_ARUN_GG_PORT") {
         if let Ok(port) = s.parse() {
@@ -35,7 +37,8 @@ async fn main() -> Result<(), anyhow::Error> {
         .route("/coin", get(flip_a_coin))
         .route("/random_number", get(random_number))
         .route("/random_colour", get(random_colour))
-        .route("/unit/{n}", get(unit_conversion));
+        .route("/unit/{n}", get(unit_conversion))
+        .nest("/next", routes::next::next());
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", *PORT)).await?;
     tracing::info!("Listening on {:?}", listener.local_addr()?);
