@@ -19,19 +19,6 @@ struct TimezoneQuery {
     tz: Option<String>,
 }
 
-fn next_weekday_from(date: NaiveDate, target: Weekday) -> NaiveDate {
-    let wd = date.weekday();
-    let delta = (7 + target.num_days_from_monday() as i32 - wd.num_days_from_monday() as i32) % 7;
-    let offset = if delta == 0 { 7 } else { delta };
-    date + Duration::days(offset as i64)
-}
-
-fn this_weekday_from(date: NaiveDate, target: Weekday) -> NaiveDate {
-    let wd = date.weekday();
-    let delta = (7 + target.num_days_from_monday() as i32 - wd.num_days_from_monday() as i32) % 7;
-    date + Duration::days(delta as i64)
-}
-
 fn parse_weekday(s: &str) -> Option<Weekday> {
     match s {
         "monday" | "mon" | "m" => Some(Weekday::Mon),
@@ -45,114 +32,87 @@ fn parse_weekday(s: &str) -> Option<Weekday> {
     }
 }
 
-async fn calc_next_day(
-    Path(day): Path<String>,
-    Query(tz): Query<TimezoneQuery>,
-) -> impl IntoResponse {
-    // Parse timezone (default to a specific TZ; adjust to your desired default)
-    let tz: Result<Tz, _> = match tz.tz.as_deref() {
+fn parse_tz(q: &TimezoneQuery) -> Result<Tz, String> {
+    let tz = match q.tz.as_deref() {
         None => Ok(chrono_tz::Canada::Mountain),
         Some(s) => Tz::from_str_insensitive(s),
     };
-    let tz = match tz {
-        Ok(tz) => tz,
-        Err(e) => {
-            let body = Json(json!({ "error": format!("invalid tz: {e}") }));
-            return (StatusCode::BAD_REQUEST, body);
-        }
-    };
+    tz.map_err(|e| format!("invalid tz: {e}"))
+}
 
-    // Parse weekday
-    let target = match parse_weekday(&day.to_lowercase()) {
-        Some(wd) => wd,
-        None => {
-            let body = Json(json!({
-                "error": "expected a weekday like /next/saturday?tz=America/New_York or /next/sunday?tz=Canada/Eastern"
-            }));
-            return (StatusCode::BAD_REQUEST, body);
-        }
-    };
+#[derive(Copy, Clone)]
+enum Which {
+    This,
+    Next,
+}
 
-    // Compute now in requested tz
-    let now_utc = Utc::now();
-    let now = now_utc.with_timezone(&tz);
-
-    // Compute next date for target weekday (strictly future)
-    let today = now.date_naive();
-    let next_date = next_weekday_from(today, target);
-
-    // Keep the same local time-of-day as now
-    let next_dt_local = tz
-        .with_ymd_and_hms(
-            next_date.year(),
-            next_date.month(),
-            next_date.day(),
-            now.hour(),
-            now.minute(),
-            now.second(),
-        )
-        .single();
-
-    let next_dt_local = match next_dt_local {
-        Some(dt) => dt,
-        None => {
-            // If ambiguous or nonexistent (DST transition), fall back to midnight
-            match tz
-                .with_ymd_and_hms(
-                    next_date.year(),
-                    next_date.month(),
-                    next_date.day(),
-                    0,
-                    0,
-                    0,
-                )
-                .single()
-            {
-                Some(dt) => dt,
-                None => {
-                    let body = Json(json!({
-                        "error": "failed to construct next datetime in timezone (possible DST transition issue)"
-                    }));
-                    return (StatusCode::INTERNAL_SERVER_ERROR, body);
-                }
+fn weekday_date_from(base: NaiveDate, target: Weekday, which: Which) -> NaiveDate {
+    let wd = base.weekday();
+    let delta = (7 + target.num_days_from_monday() as i32 - wd.num_days_from_monday() as i32) % 7;
+    let offset = match which {
+        Which::This => delta,
+        Which::Next => {
+            if delta == 0 {
+                7
+            } else {
+                delta
             }
         }
     };
+    base + Duration::days(offset as i64)
+}
 
-    // UTC equivalent
-    let next_dt_utc = next_dt_local.with_timezone(&Utc);
+// Build a local datetime from date + time, with DST-safe fallback to midnight.
+fn build_local_dt_safe(
+    tz: Tz,
+    date: NaiveDate,
+    hms: (u32, u32, u32),
+) -> Result<DateTime<Tz>, String> {
+    let (h, m, s) = hms;
+    if let Some(dt) = tz
+        .with_ymd_and_hms(date.year(), date.month(), date.day(), h, m, s)
+        .single()
+    {
+        return Ok(dt);
+    }
+    // fallback to midnight if ambiguous or nonexistent
+    tz.with_ymd_and_hms(date.year(), date.month(), date.day(), 0, 0, 0)
+        .single()
+        .ok_or_else(|| {
+            "failed to construct datetime in timezone (possible DST transition issue)".to_string()
+        })
+}
 
-    // Common formats
-    let rfc3339 = next_dt_local.to_rfc3339(); // 2025-08-13T15:04:05-06:00
-    let rfc3339_micros = next_dt_local.to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
-    let rfc2822 = next_dt_local.to_rfc2822(); // Wed, 13 Aug 2025 15:04:05 -0600
+fn formats_payload(day_str: &str, tz: Tz, local_dt: DateTime<Tz>) -> serde_json::Value {
+    let utc_dt = local_dt.with_timezone(&Utc);
 
-    // ISO-8601 extended/basic, date-only, time-only
-    let iso_extended = next_dt_local.format("%Y-%m-%dT%H:%M:%S%:z").to_string(); // 2025-08-13T15:04:05-06:00
-    let iso_basic = next_dt_local.format("%Y%m%dT%H%M%S%z").to_string(); // 20250813T150405-0600
-    let date_only = next_dt_local.format("%F").to_string(); // 2025-08-13
-    let time_only = next_dt_local.format("%T").to_string(); // 15:04:05 (local time)
-    let week_date = next_dt_local.format("%G-W%V-%u").to_string(); // 2025-W33-3
-    let ordinal_date = next_dt_local.format("%Y-%j").to_string(); // 2025-225
+    // Local formats
+    let rfc3339 = local_dt.to_rfc3339();
+    let rfc3339_micros = local_dt.to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+    let rfc2822 = local_dt.to_rfc2822();
+    let iso_extended = local_dt.format("%Y-%m-%dT%H:%M:%S%:z").to_string();
+    let iso_basic = local_dt.format("%Y%m%dT%H%M%S%z").to_string();
+    let date_only = local_dt.format("%F").to_string();
+    let time_only = local_dt.format("%T").to_string();
+    let week_date = local_dt.format("%G-W%V-%u").to_string();
+    let ordinal_date = local_dt.format("%Y-%j").to_string();
+    let local_with_tzname = local_dt.format("%Y-%m-%d %H:%M:%S %Z%:z").to_string();
 
-    // Localized clarity
-    let local_with_tzname = next_dt_local.format("%Y-%m-%d %H:%M:%S %Z%:z").to_string(); // 2025-08-13 15:04:05 MDT-06:00
+    // UTC formats
+    let utc_rfc3339 = utc_dt.to_rfc3339();
+    let utc_extended = utc_dt.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let utc_basic = utc_dt.format("%Y%m%dT%H%M%SZ").to_string();
+    let utc_rfc2822 = utc_dt.to_rfc2822();
 
-    // UTC variants
-    let utc_rfc3339 = next_dt_utc.to_rfc3339(); // Z suffix
-    let utc_extended = next_dt_utc.format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let utc_basic = next_dt_utc.format("%Y%m%dT%H%M%SZ").to_string();
-    let utc_rfc2822 = next_dt_utc.to_rfc2822();
+    // Epochs
+    let epoch_seconds = utc_dt.timestamp();
+    let epoch_millis = utc_dt.timestamp_millis();
+    let epoch_micros = utc_dt.timestamp_micros();
+    let epoch_nanos = utc_dt.timestamp_nanos_opt().unwrap_or(0);
 
-    // Epoch timestamps
-    let epoch_seconds = next_dt_utc.timestamp(); // i64 seconds
-    let epoch_millis = next_dt_utc.timestamp_millis(); // i64 milliseconds
-    let epoch_micros = next_dt_utc.timestamp_micros(); // i64 microseconds
-    let epoch_nanos = next_dt_utc.timestamp_nanos_opt().unwrap_or(0);
-
-    let body = Json(json!({
+    json!({
         "input": {
-            "weekday": day,
+            "weekday": day_str,
             "timezone": tz.name(),
         },
         "local": {
@@ -179,146 +139,65 @@ async fn calc_next_day(
             "microseconds": epoch_micros,
             "nanoseconds": epoch_nanos,
         }
-    }));
+    })
+}
 
+async fn handle_calc(day: String, tz_q: TimezoneQuery, which: Which) -> impl IntoResponse {
+    // TZ
+    let tz = match parse_tz(&tz_q) {
+        Ok(tz) => tz,
+        Err(msg) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))),
+    };
+
+    // Weekday
+    let target = match parse_weekday(&day.to_lowercase()) {
+        Some(wd) => wd,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "expected a weekday like /next/saturday?tz=America/New_York or /next/sunday?tz=Canada/Eastern"
+                })),
+            );
+        }
+    };
+
+    // Now in tz
+    let now_local = Utc::now().with_timezone(&tz);
+    let today = now_local.date_naive();
+
+    // Choose date by mode
+    let target_date = weekday_date_from(today, target, which);
+
+    // Keep same local time-of-day as now, with DST-safe fallback
+    let local_dt = match build_local_dt_safe(
+        tz,
+        target_date,
+        (now_local.hour(), now_local.minute(), now_local.second()),
+    ) {
+        Ok(dt) => dt,
+        Err(msg) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": msg })),
+            );
+        }
+    };
+
+    let body = Json(formats_payload(&day, tz, local_dt));
     (StatusCode::OK, body)
+}
+
+async fn calc_next_day(
+    Path(day): Path<String>,
+    Query(tz): Query<TimezoneQuery>,
+) -> impl IntoResponse {
+    handle_calc(day, tz, Which::Next).await
 }
 
 async fn calc_this_day(
     Path(day): Path<String>,
     Query(tz): Query<TimezoneQuery>,
 ) -> impl IntoResponse {
-    // Parse timezone (default to a specific TZ; adjust to your desired default)
-    let tz: Result<Tz, _> = match tz.tz.as_deref() {
-        None => Ok(chrono_tz::Canada::Mountain),
-        Some(s) => Tz::from_str_insensitive(s),
-    };
-    let tz = match tz {
-        Ok(tz) => tz,
-        Err(e) => {
-            let body = Json(json!({ "error": format!("invalid tz: {e}") }));
-            return (StatusCode::BAD_REQUEST, body);
-        }
-    };
-
-    // Parse weekday
-    let target = match parse_weekday(&day.to_lowercase()) {
-        Some(wd) => wd,
-        None => {
-            let body = Json(json!({
-                "error": "expected a weekday like /next/saturday?tz=America/New_York or /next/sunday?tz=Canada/Eastern"
-            }));
-            return (StatusCode::BAD_REQUEST, body);
-        }
-    };
-
-    // Compute now in requested tz
-    let now_utc = Utc::now();
-    let now = now_utc.with_timezone(&tz);
-
-    // Compute next date for target weekday (strictly future)
-    let today = now.date_naive();
-    let next_date = this_weekday_from(today, target);
-
-    // Keep the same local time-of-day as now
-    let next_dt_local = tz
-        .with_ymd_and_hms(
-            next_date.year(),
-            next_date.month(),
-            next_date.day(),
-            now.hour(),
-            now.minute(),
-            now.second(),
-        )
-        .single();
-
-    let next_dt_local = match next_dt_local {
-        Some(dt) => dt,
-        None => {
-            // If ambiguous or nonexistent (DST transition), fall back to midnight
-            match tz
-                .with_ymd_and_hms(
-                    next_date.year(),
-                    next_date.month(),
-                    next_date.day(),
-                    0,
-                    0,
-                    0,
-                )
-                .single()
-            {
-                Some(dt) => dt,
-                None => {
-                    let body = Json(json!({
-                        "error": "failed to construct next datetime in timezone (possible DST transition issue)"
-                    }));
-                    return (StatusCode::INTERNAL_SERVER_ERROR, body);
-                }
-            }
-        }
-    };
-
-    // UTC equivalent
-    let next_dt_utc = next_dt_local.with_timezone(&Utc);
-
-    // Common formats
-    let rfc3339 = next_dt_local.to_rfc3339(); // 2025-08-13T15:04:05-06:00
-    let rfc3339_micros = next_dt_local.to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
-    let rfc2822 = next_dt_local.to_rfc2822(); // Wed, 13 Aug 2025 15:04:05 -0600
-
-    // ISO-8601 extended/basic, date-only, time-only
-    let iso_extended = next_dt_local.format("%Y-%m-%dT%H:%M:%S%:z").to_string(); // 2025-08-13T15:04:05-06:00
-    let iso_basic = next_dt_local.format("%Y%m%dT%H%M%S%z").to_string(); // 20250813T150405-0600
-    let date_only = next_dt_local.format("%F").to_string(); // 2025-08-13
-    let time_only = next_dt_local.format("%T").to_string(); // 15:04:05 (local time)
-    let week_date = next_dt_local.format("%G-W%V-%u").to_string(); // 2025-W33-3
-    let ordinal_date = next_dt_local.format("%Y-%j").to_string(); // 2025-225
-
-    // Localized clarity
-    let local_with_tzname = next_dt_local.format("%Y-%m-%d %H:%M:%S %Z%:z").to_string(); // 2025-08-13 15:04:05 MDT-06:00
-
-    // UTC variants
-    let utc_rfc3339 = next_dt_utc.to_rfc3339(); // Z suffix
-    let utc_extended = next_dt_utc.format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let utc_basic = next_dt_utc.format("%Y%m%dT%H%M%SZ").to_string();
-    let utc_rfc2822 = next_dt_utc.to_rfc2822();
-
-    // Epoch timestamps
-    let epoch_seconds = next_dt_utc.timestamp(); // i64 seconds
-    let epoch_millis = next_dt_utc.timestamp_millis(); // i64 milliseconds
-    let epoch_micros = next_dt_utc.timestamp_micros(); // i64 microseconds
-    let epoch_nanos = next_dt_utc.timestamp_nanos_opt().unwrap_or(0);
-
-    let body = Json(json!({
-        "input": {
-            "weekday": day,
-            "timezone": tz.name(),
-        },
-        "local": {
-            "rfc3339": rfc3339,
-            "rfc3339_micros": rfc3339_micros,
-            "rfc2822": rfc2822,
-            "iso_extended": iso_extended,
-            "iso_basic": iso_basic,
-            "date_only": date_only,
-            "time_only": time_only,
-            "week_date": week_date,
-            "ordinal_date": ordinal_date,
-            "with_tzname": local_with_tzname,
-        },
-        "utc": {
-            "rfc3339": utc_rfc3339,
-            "rfc2822": utc_rfc2822,
-            "iso_extended": utc_extended,
-            "iso_basic": utc_basic,
-        },
-        "epoch": {
-            "seconds": epoch_seconds,
-            "milliseconds": epoch_millis,
-            "microseconds": epoch_micros,
-            "nanoseconds": epoch_nanos,
-        }
-    }));
-
-    (StatusCode::OK, body)
+    handle_calc(day, tz, Which::This).await
 }
